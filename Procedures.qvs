@@ -1,4 +1,6 @@
-﻿///$tab License
+﻿///$tab Main
+///$tab Main
+///$tab License
 /*************************************************************************
 * 
 * Ansell Healthcare, LLC
@@ -327,9 +329,16 @@ SUB MaskLoad(pML_Table, pML_Mask, pML_Load, pML_FileSpec, pML_Condition, pML_Fil
 				
 				TRACE $(vML_Dates) < $(pML_StartDate);
 	
-				IF Date#(SubField(vML_Dates,'-',2),'YYYYMMDD')<pML_StartDate and alt(ApplyMap('mHReload',upper(vML_File),0),0)=0 then
+				IF Num#(SubField(vML_Dates,'-',2))<num#(text(date(pML_StartDate,'YYYYMMDD'))) and alt(ApplyMap('mHReload',upper(vML_File),0),0)=0 then
 					
 					SET vML_Message = 'File [$(vML_File)] not loaded because its time interval is too low';
+					CALL LogMessage(pML_Table,cSUCCESSFUL,vML_Message);
+					
+					SET fML_FileCheck = 0;
+					
+				ELSEIF Num#(SubField(vML_Dates,'-',2))=0 then
+					
+					SET vML_Message = 'File [$(vML_File)] not loaded because it should not be loaded';
 					CALL LogMessage(pML_Table,cSUCCESSFUL,vML_Message);
 					
 					SET fML_FileCheck = 0;
@@ -494,7 +503,7 @@ ENDSUB;
 ///$tab FindStartDate
 SUB FindStartDate(pFSD_Table, pFSD_Result)
 
-	LET vFSD_Result = 1;
+	LET vFSD_Result = 0;
 	
 	FOR Each vFSDFile in FileList('$(vQVDPath)$(pFSD_Table)-*.qvd')
 	
