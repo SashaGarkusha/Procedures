@@ -1,0 +1,645 @@
+﻿///$tab License
+/*************************************************************************
+* 
+* Ansell Healthcare, LLC
+* DVSTS Ltd.
+* CONFIDENTIAL
+* __________________
+* 
+* 2016 Ansell Healthcare, LLC 
+* 2016 DVSTS Ltd. 
+* All Rights Reserved.
+* 
+* NOTICE:  All information contained herein is, and remains
+* the property of Ansell Healthcare, LLC and DVSTS Ltd. The
+* intellectual and technical concepts contained herein are
+* proprietary to Ansell Healthcare, LLC and DVSTS Ltd. and
+* may be covered by U.S. and Foreign Patents, patents in
+* process, and are protected by trade secret or copyright
+* law. Dissemination of this information or reproduction of
+* this material is strictly forbidden unless prior written
+* permission is obtained from Ansell Healthcare, LLC.
+*************************************************************************/
+ 
+///$tab Constants
+SET cSUCCESSFUL = 1;
+SET cWARNING = 2;
+SET cWARNINGDOUBLES = 3;
+SET cFAILURE = 10;
+
+SET vPurgeChars = Chr(9)&Chr(10)&Chr(13)&Chr(32)&Chr(160)&Chr(12288)&'-';
+SET vRegionList = 'NA', 'EMEA', 'APAC', 'Central', 'LAC', 'Microgard';
+///$tab Hisotical Files
+LET vHReload = 0;
+
+[_HReload]:
+NoConcatenate LOAD
+	Null() as [_HRFP]
+AutoGenerate(0);
+
+IF Alt(FileSize('$(vINCPath)ReloadHist.csv'),0)>0 THEN
+
+	Concatenate([_HReload])
+	Load
+		FilePath as [_HRFP]
+	FROM
+	[$(vINCPath)ReloadHist.csv]
+	(txt, utf8, embedded labels, delimiter is '\t', msq);
+
+ENDIF;
+
+LET vHReload = alt(NoOfRows('_HReload'),0)>0;
+LET vSI_First = true();
+
+[mHReload]:
+Mapping Load
+	Upper([_HRFP])
+	,1
+Resident [_HReload];
+
+Drop Table [_HReload];
+
+///$tab Expressions
+SET eFileExsist=if(FileSize('$1')>0,-1,0);
+SET eEmptyCheck=if(Alt(Len($1),0)=0,$2,$1);
+///$tab DropTable
+SUB DropTable(pDT_TableName)
+
+	TRACE Deleting table [$(pDT_TableName)];
+	
+	IF Not IsNull(TableNumber(pDT_TableName)) then
+		
+		DROP Table [$(pDT_TableName)];
+		TRACE SUCCESS: Table [$(pDT_TableName)] deleted successfuly;
+	
+	ELSE 
+
+		TRACE WARNING: Table [$(pDT_TableName)] was not found;
+	
+	ENDIF
+
+ENDSUB;
+///$tab LogMessage
+SUB LogMessage(pLM_Table,pLM_Status,pLM_Message,pLM_FeildSource,pLM_FeildOut,pLM_Were)
+
+	LET pLM_Message 	= if(Left(pLM_Message,1) = chr(39),pLM_Message,chr(39)&pLM_Message&chr(39));
+	LET vLM_ReloadTime 	= Timestamp(vReloadTime,'YYYYMMDDhhmmss');
+	
+	SWITCH pLM_Status
+	CASE 1
+	
+		TRACE [$(pLM_Table)]: Loaded successfuly;
+		
+		LET pLM_Message = if(len(pLM_Message) = 2,chr(39)&'Table loaded successfuly'&chr(39),pLM_Message);
+		
+		[LM_Log]:
+		NoConcatenate LOAD
+			 DocumentPath() 		as [Module]
+			,$(vReloadTime) 		as [ReloadTime]
+			,[TABLE]
+			,[STATUS]
+			,$(pLM_Message) 		as [MESSAGE]
+			,NULL()					as [REC_NO]	
+			,NULL()					as [FromValue]
+			,NULL()					as [ToValue]
+			,NULL()					as [FN]
+
+		INLINE [
+		    TABLE, STATUS
+		    $(pLM_Table), SUCCESSFULY
+		];
+	
+	CASE 2
+		
+		TRACE [$(pLM_Table)]: Loaded with warnings;
+		
+		If SubStringCount(pLM_FeildSource,'.src') > 0 THEN
+			LET vSource = SubField(pLM_FeildSource,'.src',1);
+		ELSE
+			LET vSource = pLM_FeildSource;
+		ENDIF
+	
+		[LM_Log]:
+		NoConcatenate LOAD DocumentPath() 		as [Module]
+			,$(vReloadTime) 		as [ReloadTime]		
+			,'$(pLM_Table)' 		as [TABLE]
+			,'WARNING' 				as [STATUS]
+			,'$(vSource)'			as [MESSAGE]
+			,RN						as [REC_NO]	
+			,[$(pLM_FeildSource)]	as [FromValue]
+			,[$(pLM_FeildOut)]		as [ToValue]
+			,[FN]
+		Resident $(pLM_Table)
+		Where not(Text([$(pLM_FeildSource)]) like Text([$(pLM_FeildOut)]))
+		$(pLM_Were);
+		
+		/*
+		[LM_Log]:
+		LOAD
+			 DocumentPath() as [Module]
+			,$(vReloadTime) as [ReloadTime]
+			,'$(pLM_Table)' as [TABLE]
+			,'WARNING' 		as [STATUS]
+			,$(pLM_Message) as [MESSAGE]
+		Resident [$(pLM_Table)]
+		Where [QC] = 1;
+		*/
+
+	CASE 3
+	
+		[LM_Log]:
+		NoConcatenate LOAD
+			 DocumentPath() 		as [Module]
+			,$(vReloadTime) 		as [ReloadTime]
+			,'$(pCD_Table)' 		as [TABLE]
+			,'WARNING ON DOUBLES' 	as [STATUS]
+			,'[$(pCD_Field)] = "'&[$(pCD_Field)]&'" has double entries:'&chr(10)&chr(13)
+				&Concat('File: "'&[FN]&'", Line# '&([RN]+1),chr(10)&chr(13),[FN]&[RN]) as [MESSAGE]
+			,NULL()					as [REC_NO]	
+			,NULL()					as [FromValue]
+			,NULL()					as [ToValue]
+			,NULL()					as [FN]
+		Resident [CD_Check]
+		Group By [$(pCD_Field)];
+	
+	CASE 10
+	
+		TRACE [$(pLM_Table)]: Load failed;
+		
+		[LM_Log]:
+		NoConcatenate LOAD
+			DocumentPath() 			as [Module]
+			,$(vReloadTime) 		as [ReloadTime]
+			,[TABLE]
+			,[STATUS]
+			,$(pLM_Message) 		as [MESSAGE]
+			,NULL()					as [REC_NO]	
+			,NULL()					as [FromValue]
+			,NULL()					as [ToValue]
+			,NULL()					as [FN]
+		INLINE [
+		    TABLE, STATUS, MESSAGE
+		    $(pLM_Table), FAILURE, Table load failed
+		];
+	
+	CASE 13
+	
+		TRACE [$(pLM_Table)]: Load failed;
+		
+		[LM_Log]:
+		NoConcatenate LOAD DocumentPath() 		as [Module]
+			,$(vReloadTime) 		as [ReloadTime]		
+			,'$(pLM_Table)' 		as [TABLE]
+			,'WARNING' 				as [STATUS]
+			,'$(vSource)'			as [MESSAGE]
+			,RN						as [REC_NO]	
+			,[$(pLM_FeildSource)]		as [FromValue]
+			,'$(pLM_FeildOut)'		as [ToValue]
+			,[FN]
+		Resident $(pLM_Table)
+		Where $(pLM_Were);
+	
+
+	ENDSWITCH;
+
+	IF Alt(QvdNoOfRecords('$(vLOGPath)Log_$(pLM_Table)_$(vLM_ReloadTime).qvd'),0)>0 then
+	
+		Concatenate([LM_Log])
+		LOAD
+			 [Module]
+			,[ReloadTime]
+			,[TABLE]
+			,[STATUS]
+			,[MESSAGE]
+			,[REC_NO]	
+			,[FromValue]
+			,[ToValue]
+			,FN
+		FROM
+		[$(vLOGPath)Log_$(pLM_Table)_$(vLM_ReloadTime).qvd]
+		(qvd);
+	
+	ENDIF;
+
+	STORE [LM_Log] into '$(vLOGPath)Log_$(pLM_Table)_$(vLM_ReloadTime).qvd' (qvd);
+	
+	CALL DropTable('LM_Log');
+	
+	LET vLM_ReloadTime = Null();
+	
+ENDSUB;
+///$tab CheckDoubles
+SUB CheckDoubles(pCD_Table,pCD_Field)
+
+	LET rCheckDoubles = False();
+	LET vCD_ReloadTime = Timestamp(vReloadTime,'YYYYMMDDhhmmss');
+
+	[CD_Check]:
+	LOAD
+		[$(pCD_Field)]
+		,Count([$(pCD_Field)]) as [CD_cnt]
+	Resident [$(pCD_Table)]
+	Group By [$(pCD_Field)];
+	
+	Inner Join ([CD_Check])
+		LOAD Distinct
+			[CD_cnt]
+		Resident [CD_Check]
+		Where [CD_cnt]>1;
+	
+	IF alt(NoOfRows('CD_Check'),0)>0 then
+		
+		LET rCheckDoubles = True();
+
+		Left Join ([CD_Check])
+			LOAD Distinct
+				[$(pCD_Field)]
+				,[FN]
+				,[RN]
+			Resident [$(pCD_Table)];
+		
+		CALL LogMessage(pCD_Table,cWARNINGDOUBLES);
+		CALL DropTable('CD_Check');
+		
+	ELSE
+	
+		CALL DropTable('CD_Check');
+	
+	ENDIF;
+
+	LET vCD_ReloadTime = Null();
+
+ENDSUB;
+///$tab MaskLoad
+SUB MaskLoad(pML_Table, pML_Mask, pML_Load, pML_FileSpec, pML_Condition, pML_FileCheck, pML_StartDate, pML_FCError)
+
+	LET vML_Condition = if(IsNull(pML_Condition),'','Where '&pML_Condition);
+	LET vML_Cnt = 0;
+	LET vGL_MaskList = if(alt(len(vGL_MaskList),0)=0,chr(39)&'$(vSrcPath)$(pML_Mask)'&chr(39),vGL_MaskList&','&chr(39)&'$(vSrcPath)$(pML_Mask)'&chr(39));
+
+	FOR Each vML_File in FileList('$(vSrcPath)$(pML_Mask)')
+	
+		LET vML_Cnt = vML_Cnt + 1;
+
+	NEXT vML_File;
+	
+	LET vML_File = Null();
+	LET iML_Cnt = 0;
+
+	FOR Each vML_File in FileList('$(vSrcPath)$(pML_Mask)')
+	
+		LET iML_Cnt = iML_Cnt + 1;
+		
+		IF SubStringCount(vML_File,Chr(39))>0 then
+			
+			LET vML_File = Replace(vML_File,Chr(39),Chr(39)&Chr(39));
+
+			TRACE $(iML_Cnt)/$(vML_Cnt);
+			TRACE $(vML_File);
+
+			LET vML_File = Replace(vML_File,Chr(39)&Chr(39),Chr(39)&'&Chr(39)&'&Chr(39));
+			LET vML_Message = 'File [$(vML_File)] is not named correctly. It has forbidden symbols in name.'; 
+			CALL LogMessage(pML_Table,cFAILURE,vML_Message);
+			
+			SET fML_FileCheck = 0;
+			
+		ELSE
+		
+			TRACE $(iML_Cnt)/$(vML_Cnt);
+			TRACE $(vML_File);
+			
+			SET fML_FileCheck = -1;
+			
+			IF not IsNull(pML_FileCheck) then
+			
+				LET vML_FileCheck = SubField(Replace(vML_File,'\','/'),'/',-1);
+				
+				LET vML_Dates = $(pML_FileCheck($(vML_FileCheck)));
+				
+				IF vML_Dates = 0 then
+					
+					LET vML_Message = 'File [$(vML_File)] is not named correctly. ' & pML_FCError; 
+					CALL LogMessage(pML_Table,cFAILURE,vML_Message);
+					
+					SET fML_FileCheck = 0;
+					
+				ENDIF
+				
+				TRACE $(vML_Dates) < $(pML_StartDate);
+	
+				IF Date#(SubField(vML_Dates,'-',2),'YYYYMMDD')<pML_StartDate and alt(ApplyMap('mHReload',upper(vML_File),0),0)=0 then
+					
+					SET vML_Message = 'File [$(vML_File)] not loaded because its time interval is too low';
+					CALL LogMessage(pML_Table,cSUCCESSFUL,vML_Message);
+					
+					SET fML_FileCheck = 0;
+					
+				ENDIF
+			
+			ENDIF
+
+		ENDIF
+		
+		IF fML_FileCheck then
+		
+			IF IsNull(TableNumber('$(pML_Table)')) then
+			
+				SET vML_Table = '[$(pML_Table)]:';
+				
+			ELSE
+			
+				SET vML_Table = 'Concatenate([$(pML_Table)])';
+				
+			ENDIF
+			
+			LET vML_ErrorMode = ErrorMode;
+			SET ErrorMode = 0;
+			
+			$(vML_Table)
+			LOAD $(pML_Load)
+			FROM
+			[$(vML_File)]
+			($(pML_FileSpec))
+			$(vML_Condition);
+		
+			LET vML_ScriptError = ScriptError;
+			
+			IF vML_ScriptError > 0 then
+		
+				SET vML_Message = 'File [$(vML_File)] thrown an error: $(vML_ScriptError)';
+				CALL LogMessage(pML_Table,cFAILURE,vML_Message);
+			
+			ENDIF
+		
+			LET ErrorMode = vML_ErrorMode;
+			LET vML_ScriptError = Null();
+		
+		ENDIF;
+	
+	NEXT vML_File;
+	
+	IF IsNull(vML_File) or IsNull(TableNumber('$(pML_Table)')) then
+		
+		SET vML_Message = 'Files under mask [$(vSrcPath)$(pML_Mask)] not found';
+		CALL LogMessage(pML_Table,cFAILURE,vML_Message);
+	
+	ENDIF;
+	
+	LET vML_File = Null();
+	LET vML_Message = Null();
+	LET vML_Condition = Null();
+	LET vML_FileCheck = Null();
+	LET fML_FileCheck = Null();
+	LET vML_Cnt = Null();
+	LET iML_Cnt = Null();
+
+ENDSUB
+///$tab StoreIncremental
+SUB StoreIncremental(pSI_Table,pSI_StoreFieldList,pSI_IncrementalField,pSI_StoreName,pSI_StartDate)
+
+	LET vSI_StoreName = if(not IsNull(pSI_StoreName),pSI_StoreName,pSI_Table);
+	LET vSI_SD_Where  = IF(IsNull(pSI_StartDate),'',pSI_StartDate);
+	LET vGL_MaskList = if(alt(len(vGL_MaskList),0)=0,'','Wildmatch(FN,'&vGL_MaskList&')=0');
+	
+	LET vSI_Where = if(alt(len(vGL_MaskList),0)=0 and alt(len(vSI_SD_Where),0)=0,'',if(alt(len(vGL_MaskList),0)=0,'1=1',vGL_MaskList)&' '&vSI_SD_Where);
+	
+	LET vSI_Where = if(vHReload or alt(len(vSI_Where),0)>0,'Where ','')
+		&if(vHReload,'/*applymap(''mHReload'',upper(FN),0)=0*/ 1=1','')
+		&if(vHReload and alt(len(vSI_Where),0)>0,' and ','')
+		&if(alt(len(vSI_Where),0)>0,'('&vSI_Where&')','');
+	
+	IF vHReload and vSI_First THEN
+	
+		FOR Each vSI_File in FileList('$(vQVDPath)$(vSI_StoreName)-*.qvd')
+		
+			[SI_FN]:
+			NoConcatenate
+			LOAD Distinct
+				[FN]
+			From '$(vSI_File)' (qvd)
+			Where applymap('mHReload',upper(FN),0)>0;
+			
+			IF alt(NoOfRows('SI_FN'),0)>0 THEN
+			
+				[SI_Table]:
+				NoConcatenate
+				LOAD *
+				From '$(vSI_File)' (qvd)
+				Where applymap('mHReload',upper(FN),0)=0;
+				
+				STORE [SI_Table] into '$(vSI_File)' (qvd);
+				
+				CALL DropTable('SI_Table');
+			
+			ENDIF
+			
+			CALL DropTable('SI_FN');
+		
+		NEXT vSI_File
+		
+		LET vSI_First = false();
+	
+	ENDIF
+		
+	[SI_FN]:
+	NoConcatenate
+	LOAD Distinct
+		[FN] as [SI_FN]
+	Resident [$(pSI_Table)];
+	
+	[SI_$(pSI_Table)]:
+	Generic LOAD Distinct
+		*
+		,$(pSI_IncrementalField) as [SI_t]
+		,$(pSI_IncrementalField) as [SI_t2]
+	Resident [$(pSI_Table)];
+	
+	LET vSI_Tables = 'CALL DropTable('&chr(39)&'SI_FN'&chr(39)&');';
+	
+	FOR i = 0 to NoOfTables()-1
+	
+		LET vSI_Table = TableName(i);
+		
+		IF vSI_Table like 'SI_$(pSI_Table).*' then
+			
+			LET vSI_Suffix = SubField(vSI_Table,'.',-1);
+			
+			IF $(eFileExsist($(vQVDPath)$(vSI_StoreName)-$(vSI_Suffix).qvd)) then
+			
+				Concatenate([$(vSI_Table)])
+				LOAD *
+				FROM
+				[$(vQVDPath)$(vSI_StoreName)-$(vSI_Suffix).qvd]
+				(qvd)
+				$(vSI_Where);
+
+			ENDIF
+		
+			STORE $(pSI_StoreFieldList) from [$(vSI_Table)] into '$(vQVDPath)$(vSI_StoreName)-$(vSI_Suffix).qvd' (qvd);
+			
+			LET vSI_Tables = vSI_Tables&chr(10)&chr(13)&'CALL DropTable('&chr(39)&vSI_Table&chr(39)&');';
+			
+		ENDIF;
+	
+	NEXT i;
+	
+	$(vSI_Tables);	
+	
+	LET vSI_Tables = Null();
+	LET vSI_StoreName = Null();
+	LET vGL_MaskList = Null();
+	LET vSI_Where = Null();
+
+ENDSUB;
+///$tab FindStartDate
+SUB FindStartDate(pFSD_Table, pFSD_Result)
+
+	LET vFSD_Result = 1;
+	
+	FOR Each vFSDFile in FileList('$(vQVDPath)$(pFSD_Table)-*.qvd')
+	
+		LET vFSD_Result = RangeMax(vFSD_Result,Daystart(YearEnd(MonthStart(Date#(SubField(SubField(SubField(Replace(vFSDFile,'\','/'),'/',-1),'.',-2),'-',-1),'YYYY')))));
+		
+	NEXT vFSDFile;
+	
+	LET $(pFSD_Result) = vFSD_Result;
+	
+	LET vFSD_Result = Null();
+	LET vFSDFile = Null();
+
+ENDSUB;
+///$tab ParseDir
+SUB ParseDir(pPD_Root,pPD_Recursive,pPD_CALL)
+
+	LET vPD_Recursive = if(IsNull(pPD_Recursive),False(),pPD_Recursive);
+
+	FOR Each vPD_Dir in DirList(pPD_Root)
+	
+		IF not IsNull(pPD_CALL) then
+			
+			$(pPD_CALL);
+		
+		ELSE
+
+			IF IsNull(TableNumber('t_ParseDir')) then
+				
+				t_ParseDir:
+				LOAD Distinct
+					'$(vPD_Dir)' as t_ParseDir
+				AutoGenerate (1);
+			
+			ELSE
+
+				Concatenate(t_ParseDir)
+				LOAD Distinct
+					'$(vPD_Dir)' as t_ParseDir
+				AutoGenerate (1);
+				
+			ENDIF;
+		
+		ENDIF;
+
+		IF vPD_Recursive then 
+			
+			CALL ParseDir('$(vPD_Dir)\*',pPD_Recursive,pPD_CALL);
+		
+		ENDIF
+	
+	NEXT vPD_Dir
+	
+	LET vPD_Dir = Null();
+	LET vPD_Recursive = Null();
+
+ENDSUB
+///$tab DelLog
+SUB DelLog (pDL_CheckFolder, pDL_PrefixName, pDL_CountSaveLoad)
+	
+	FOR Each vLogFile in FileList('$(pDL_CheckFolder)\$(pDL_PrefixName)*.qvd')
+	
+		t:
+		LOAD
+			 Left(LogFile,Index(LogFile,'_',SubStringCount(LogFile,'_')))	as Etalon
+			
+			,LogFile
+			,FileSize(LogFile) 			as FileSize
+			,FileTime(LogFile) 			as FileTime
+			,SubField(LogFile,'\',-1) 	as FileBaseName
+		;
+		LOAD 
+			'$(vLogFile)' 				as LogFile
+		AutoGenerate (1);
+	
+	NEXT vLogFile;
+	
+	if not isnull(TableNumber('t')) then
+	
+		Left Join (t)
+		LOAD RecNo()						as REC_NO,
+			 LogFile
+		Resident t
+		Order by Etalon, FileTime desc;
+		
+		Left Join (t)
+		LOAD Etalon,
+			 Min(REC_NO)-1					as Min_RN
+		Resident t
+		Group By Etalon;
+		
+		Left Join (t)
+		LOAD *,
+			 REC_NO - Min_RN				as Num
+		Resident t;
+		
+		DelLog:
+		NoConcatenate
+		LOAD *
+		Resident t
+		Where Num > $(pDL_CountSaveLoad);
+		
+		DROP Table t;
+		
+		if not isnull(TableNumber('DelLog')) then
+			
+			t0:
+			NoConcatenate LOAD Distinct
+				LogFile
+			Resident DelLog;
+			
+			FOR i = 1 to NoOfRows('t0') 
+			
+				let FileName = Peek('LogFile',i-1,'t0');
+				
+				TRACE $(i) - $(FileName);
+		
+				EXECUTE powershell -Command "& {del '$(FileName)' -force}";
+				
+			NEXT i;
+			
+			DROP Tables DelLog, t0;
+			
+		ENDIF;
+	ENDIF;
+ENDSUB
+///$tab CheckQvdField
+SUB CheckQvdField (pFile,pField,pResult)
+
+	LET CQF_cnt = QvdNoOfFields(pFile);
+	LET $(pResult) = False();
+	
+	FOR CQF_i = 1 to CQF_cnt
+	
+		LET CQF_Fld = QvdFieldName(pFile,CQF_i);
+		
+		IF CQF_Fld like pField THEN
+			
+			LET $(pResult) = True();
+			
+		ENDIF;			
+	
+	NEXT CQF_i;
+	
+	LET CQF_cnt = Null();
+	LET CQF_i = Null();
+	LET CQF_Fld = Null();
+	
+ENDSUB;

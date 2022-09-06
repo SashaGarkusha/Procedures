@@ -1,0 +1,4 @@
+﻿.qopsconfig
+*App.local.json
+*.qvw
+*.zip
